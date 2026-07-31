@@ -17,7 +17,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
-use crate::tools::handlers::rewrite_function_string_argument;
+use crate::tools::handlers::rewrite_function_arguments;
 use crate::tools::handlers::updated_hook_command;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
@@ -263,13 +263,18 @@ impl CoreToolRuntime for ShellCommandHandler {
                 "hook input rewrite received unsupported shell_command payload".to_string(),
             ));
         };
+        let command = updated_hook_command(&updated_input)?;
+        let sandbox_permissions = updated_input.get("sandbox_permissions").cloned();
         invocation.payload = ToolPayload::Function {
-            arguments: rewrite_function_string_argument(
-                &arguments,
-                "shell_command",
-                "command",
-                updated_hook_command(&updated_input)?,
-            )?,
+            arguments: rewrite_function_arguments(&arguments, "shell_command", |arguments| {
+                arguments.insert(
+                    "command".to_string(),
+                    serde_json::Value::String(command.into()),
+                );
+                if let Some(sandbox_permissions) = sandbox_permissions {
+                    arguments.insert("sandbox_permissions".to_string(), sandbox_permissions);
+                }
+            })?,
         };
         Ok(invocation)
     }

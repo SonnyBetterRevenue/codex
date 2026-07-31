@@ -270,6 +270,93 @@ async fn shell_command_pre_tool_use_payload_uses_raw_command() {
     );
 }
 
+async fn rewritten_shell_command_arguments(
+    sandbox_permissions: Option<SandboxPermissions>,
+    updated_input: serde_json::Value,
+) -> anyhow::Result<String> {
+    let mut arguments = json!({ "command": "printf original" });
+    if let Some(sandbox_permissions) = sandbox_permissions {
+        arguments["sandbox_permissions"] = json!(sandbox_permissions);
+    }
+    let (session, turn) = make_session_and_context().await;
+    let turn = Arc::new(turn);
+    let handler = ShellCommandHandler::from(codex_tools::ShellCommandBackendConfig::Classic);
+    let invocation = handler.with_updated_hook_input(
+        ToolInvocation {
+            session: session.into(),
+            step_context: StepContext::for_test(Arc::clone(&turn)),
+            turn,
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-permission-rewrite".to_string(),
+            tool_name: codex_tools::ToolName::plain("shell_command"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: arguments.to_string(),
+            },
+        },
+        updated_input,
+    )?;
+    let ToolPayload::Function { arguments } = invocation.payload else {
+        panic!("expected function payload");
+    };
+    Ok(arguments)
+}
+
+#[tokio::test]
+async fn shell_command_hook_rewrite_updates_sandbox_permissions() -> anyhow::Result<()> {
+    let arguments = rewritten_shell_command_arguments(
+        Some(SandboxPermissions::UseDefault),
+        json!({
+            "command": "printf rewritten",
+            "sandbox_permissions": "require_escalated",
+        }),
+    )
+    .await?;
+    let params: ShellCommandToolCallParams = serde_json::from_str(&arguments)?;
+    assert_eq!(
+        params.sandbox_permissions,
+        Some(SandboxPermissions::RequireEscalated)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn shell_command_hook_rewrite_rejects_unsupported_sandbox_permissions() -> anyhow::Result<()>
+{
+    let arguments = rewritten_shell_command_arguments(
+        None,
+        json!({
+            "command": "printf rewritten",
+            "sandbox_permissions": "unsupported",
+        }),
+    )
+    .await?;
+    let err = crate::tools::handlers::parse_arguments::<ShellCommandToolCallParams>(&arguments)
+        .expect_err("unsupported sandbox permissions should be rejected");
+    assert!(
+        err.to_string().contains("unknown variant `unsupported`"),
+        "unexpected error: {err}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn shell_command_hook_rewrite_preserves_sandbox_permissions_when_omitted()
+-> anyhow::Result<()> {
+    let arguments = rewritten_shell_command_arguments(
+        Some(SandboxPermissions::RequireEscalated),
+        json!({ "command": "printf rewritten" }),
+    )
+    .await?;
+    let params: ShellCommandToolCallParams = serde_json::from_str(&arguments)?;
+    assert_eq!(
+        params.sandbox_permissions,
+        Some(SandboxPermissions::RequireEscalated)
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn build_post_tool_use_payload_uses_tool_output_wire_value() {
     let payload = ToolPayload::Function {
