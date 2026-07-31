@@ -3350,6 +3350,73 @@ async fn pre_tool_use_rewrites_shell_command_before_execution() -> Result<()> {
 }
 
 #[tokio::test]
+async fn pre_tool_use_rewrites_shell_command_sandbox_permissions_before_routing() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "pretooluse-shell-command-permission-rewrite";
+    let marker_dir = TempDir::new().context("create permission rewrite marker directory")?;
+    let marker = marker_dir.path().join("executed");
+    let command = format!("printf executed > {}", marker.display());
+    let args = serde_json::json!({
+        "command": command,
+        "sandbox_permissions": "use_default",
+    });
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-1", "permission rewrite observed"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let updated_input = serde_json::json!({
+        "command": command,
+        "sandbox_permissions": "require_escalated",
+    });
+    let mut builder = test_codex()
+        .with_pre_build_hook(move |home| {
+            write_updating_pre_tool_use_hook(home, "^Bash$", &updated_input)
+                .expect("failed to write permission rewrite hook fixture");
+        })
+        .with_config(trust_discovered_hooks);
+    let test = builder.build(&server).await?;
+
+    test.submit_turn_with_approval_and_permission_profile(
+        "run the shell command after its permission rewrite",
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let output = requests[1]
+        .function_call_output_content_and_success(call_id)
+        .and_then(|(content, _)| content)
+        .expect("shell command rejection output");
+    let policy = AskForApproval::Never;
+    assert_eq!(
+        output,
+        format!(
+            "approval policy is {policy:?}; reject command — you should not ask for escalated permissions if the approval policy is {policy:?}"
+        )
+    );
+    assert!(!marker.exists(), "rewritten command should not execute");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn pre_tool_use_rewrites_exec_command_before_execution() -> Result<()> {
     assert_pre_tool_use_rewrites_bash_surface(BashRewriteSurface::ExecCommand).await
 }
