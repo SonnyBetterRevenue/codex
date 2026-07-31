@@ -3389,7 +3389,7 @@ async fn pre_tool_use_rewrites_shell_command_sandbox_permissions_before_routing(
                 .expect("failed to write permission rewrite hook fixture");
         })
         .with_config(trust_discovered_hooks);
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
 
     test.submit_turn_with_approval_and_permission_profile(
         "run the shell command after its permission rewrite",
